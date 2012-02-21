@@ -1,0 +1,10 @@
+.*
+!.gitignore
+*~
+*.bak
+*.swp
+DEADJOE
+Makefile
+Makefile.old
+Makefile.in
+blib/*
