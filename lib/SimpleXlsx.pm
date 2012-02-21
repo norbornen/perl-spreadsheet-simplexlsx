@@ -32,7 +32,7 @@ sub new
   
   return bless $self, $package;
 }
-#sub d { $Data::Dumper::Deepcopy = 1; print Data::Dumper::Dumper @_ }
+sub d { $Data::Dumper::Deepcopy = 0; print Data::Dumper::Dumper @_ }
 
 sub zip
 {
@@ -70,6 +70,9 @@ sub parse
     my $sComments  = $self->getSheetComments($sRelations);
 
     my(%worksheet);
+    $worksheet{'Rows'} = [];
+    $worksheet{'Data'} = {};
+    $worksheet{'Merge'} = {};
     
     my($contents) = $file->contents();
     
@@ -101,46 +104,55 @@ sub parse
     }
     
     
-    my(@tcol);
-    for my $col (0 .. $#{$sData->[0]->{'c'}})
-    {
-      push @tcol, $sData->[0]->{'c'}->[$col]->{'r'};
-    }
-    $worksheet{'Columns'} = \@tcol;
-    
-    my(@trow);
-    my(%tdata);
-    for my $row (0 .. $#{$sData})
-    {
-      my($cols) = $sData->[$row]->{'c'};
-      
-      my(@rdata);
-      my(@sdata);
-      my(@cmdata);
-      for my $col (0 .. $#{$cols})
+    if ($sData) {
+      my(@tcol);
+      for my $col (0 .. $#{$sData->[0]->{'c'}})
       {
-        my $xCell     = $cols->[$col] || {};
-        my $xCellData = {};
-        $xCellData->{Data}     = !defined $xCell->{'v'} ? undef :
-                                  defined $xCell->{'t'} && $xCell->{'t'} eq 's' && defined $xCell->{'v'} ? $strings[$xCell->{'v'}] :
-                                 {text=>$xCell->{'v'}};
-        $xCellData->{Style}    = exists $xCell->{'s'} ? $styles->[$xCell->{'s'}] : undef;
-        $xCellData->{Comments} = $sComments->{$xCell->{'r'}};
-        $xCellData->{DataType} = exists $xCell->{'t'} ? $self->{'CellDataTypes'}{$xCell->{'t'}} : undef;        
-
-        push @rdata, $xCellData;
+        push @tcol, $sData->[0]->{'c'}->[$col]->{'r'};
       }
+      $worksheet{'Columns'} = \@tcol;
+      
+      my(@trow);
+      my(%tdata);
+      for my $row (0 .. $#{$sData})
+      {
+        my($cols) = $sData->[$row]->{'c'};
+        $cols = [$cols] if $cols and ref $cols ne 'ARRAY';
+        
+        my(@rdata);
+        for my $col (0 .. $#{$cols})
+        {
+          my $xCell     = $cols->[$col] || {};
+          my $xCellData = {};
+          $xCellData->{Data}     = !defined $xCell->{'v'} ? undef :
+                                    defined $xCell->{'t'} && $xCell->{'t'} eq 's' && defined $xCell->{'v'} ? $strings[$xCell->{'v'}] :
+                                   {Text=>$xCell->{'v'}};
+          $xCellData->{Style}    = exists $xCell->{'s'} ? $styles->[$xCell->{'s'}] : undef;
+          $xCellData->{Comments} = $sComments->{$xCell->{'r'}};
+          $xCellData->{DataType} = exists $xCell->{'t'} ? $self->{'CellDataTypes'}{$xCell->{'t'}} : undef;        
 
-      push @trow, $sData->[$row]->{'r'};
-      $tdata{$sData->[$row]->{'r'}}{'Data'} = \@rdata;
-      $tdata{$sData->[$row]->{'r'}}{'Style'} = \@sdata;
-      $tdata{$sData->[$row]->{'r'}}{'Comments'} = \@cmdata;
+          push @rdata, $xCellData;
+        }
+
+
+        if (exists $sData->[$row]->{'r'}) # Row Index, §18.3.1.73
+        {
+          push @trow, $sData->[$row]->{'r'};
+          $tdata{$sData->[$row]->{'r'}}{'Data'} = \@rdata;
+          
+          if (exists $sData->[$row]->{'s'})
+          {
+            $tdata{$sData->[$row]->{'r'}}{'Style'} = $styles->[$sData->[$row]->{'s'}];
+          }
+        }
+      }
+      
+      $worksheet{'Rows'} = \@trow;
+      $worksheet{'Data'} = \%tdata;
+      $worksheet{'Merge'} = \%merge;
     }
-    
-    $worksheet{'Rows'} = \@trow;
-    $worksheet{'Data'} = \%tdata;
-    $worksheet{'Merge'} = \%merge;
-    $worksheet{'Name'} = $zWorksheet->{name};
+
+    $worksheet{'Name'} = $zWorksheet->{'name'};
     
     $worksheets{$name} = \%worksheet;
 
@@ -156,8 +168,8 @@ sub getValues
 {
   my ($self, $relations) = @_;
   
-  my(@zStrings) = map {$self->zip->membersMatching('^xl/'.$_->{Target})}
-                  grep {$_->{Type} =~ m|relationships/sharedStrings$|} @$relations;
+  my(@zStrings) = map {$self->zip->membersMatching('^xl/'.$_->{'Target'})}
+                  grep {$_->{'Type'} =~ m|relationships/sharedStrings$|} @$relations;
   if ($#zStrings > 0)
   {
     warn "Error: Multiple shared strings are not [yet] supported\n";
@@ -176,17 +188,18 @@ sub getValues
     my $si = $tstrings->{'si'}->[$idx]; $si = [$si] if $si && ref $si ne 'ARRAY';
     foreach my $child (@$si)
     {
-      if (exists $child->{t})
+      if (exists $child->{'t'})
       {
-        push @string, ref $child->{t} ? $child->{t}{content} || ' ' : $child->{t};
+        push @string, {'Text' => ref $child->{'t'} ? $child->{'t'}{'content'} || ' ' : $child->{'t'}};
       }
-      if (exists $child->{r})
+      if (exists $child->{'r'})
       {
-        my $childR = $child->{r}; $childR = [$childR] if ref $childR ne 'ARRAY';
+        my $childR = $child->{'r'}; $childR = [$childR] if ref $childR ne 'ARRAY';
         foreach my $r (@$childR)
         {
           push @string, $self->_parseRichTextRun($r);
         }
+        push @string, {};
       }
     }
 
@@ -227,11 +240,11 @@ sub getWorksheets
 {
   my ($self, $relations, $workbook) = @_;
 
-  my $wbSheets = $workbook->{sheets}{sheet};
+  my $wbSheets = $workbook->{'sheets'}{'sheet'};
   my @sheets;
-  foreach my $rl (grep {$_->{Type} =~ m|relationships/worksheet$|} @$relations)
+  foreach my $rl (grep {$_->{'Type'} =~ m|relationships/worksheet$|} @$relations)
   {
-    my @zSheet    = $self->zip->membersMatching('^xl/'.$rl->{Target});
+    my @zSheet    = $self->zip->membersMatching('^xl/'.$rl->{'Target'});
     my $sheetName = undef;
     if (exists $wbSheets->{'name'})
     {
@@ -241,7 +254,7 @@ sub getWorksheets
     {
       foreach my $wbSheetName (keys %$wbSheets)
       {
-        if ($wbSheets->{$wbSheetName}{'r:id'} eq $rl->{Id})
+        if ($wbSheets->{$wbSheetName}{'r:id'} eq $rl->{'Id'})
         {
           $sheetName = $wbSheetName;
         }
@@ -269,10 +282,10 @@ sub getSheetComments
   
   my %comments;
 
-  my($rCommentsFile) = grep {$_->{Type} =~ m|relationships/comments$|} @$sRelations;
+  my($rCommentsFile) = grep {$_->{'Type'} =~ m|relationships/comments$|} @$sRelations;
   if ($rCommentsFile)
   {
-    my $zCommentsPath = '^xl/worksheets/'.$rCommentsFile->{Target};
+    my $zCommentsPath = '^xl/worksheets/'.$rCommentsFile->{'Target'};
     $zCommentsPath =~ s|/.+?/\.\./|/|go;
     
     my(@zComments) = $self->zip->membersMatching($zCommentsPath);
@@ -290,19 +303,19 @@ sub getSheetComments
       {
         # §18.7.*
         $comments{$c->{'ref'}} = {};
-        $comments{$c->{'ref'}}{'author'} = $authors->[$c->{'authorId'}];
-        $comments{$c->{'ref'}}{'text'} = [];
+        $comments{$c->{'ref'}}{'Author'} = $authors->[$c->{'authorId'}];
+        $comments{$c->{'ref'}}{'Text'} = [];
         
         # §18.7.7
         if (exists $c->{'text'}{'t'})
         {  # (Text) 
-          push @{$comments{$c->{'ref'}}{'text'}}, $_ for ref $c->{'text'}{'t'} eq 'ARRAY' ? @{$c->{'text'}{'t'}} : $c->{'text'}{'t'};
+          push @{$comments{$c->{'ref'}}{'Text'}}, $_ for ref $c->{'text'}{'t'} eq 'ARRAY' ? @{$c->{'text'}{'t'}} : $c->{'text'}{'t'};
         }
         elsif (exists $c->{'text'}{'r'})
         {  # (Rich Text Run)
           foreach my $r (ref $c->{'text'}{'r'} eq 'ARRAY' ? @{$c->{'text'}{'r'}} : $c->{'text'}{'r'})
           {
-            push @{$comments{$c->{'ref'}}{'text'}}, $self->_parseRichTextRun($r)->{text};
+            push @{$comments{$c->{'ref'}}{'Text'}}, $self->_parseRichTextRun($r)->{'Text'};
           }
         }
       }
@@ -316,8 +329,8 @@ sub getStyles
 {
   my ($self, $relations) = @_;
 
-  my(@zStyles) = map {$self->zip->membersMatching('^xl/'.$_->{Target})}
-                  grep {$_->{Type} =~ m|relationships/styles$|} @$relations;
+  my(@zStyles) = map {$self->zip->membersMatching('^xl/'.$_->{'Target'})}
+                 grep {$_->{'Type'} =~ m|relationships/styles$|} @$relations;
   if ($#zStyles > 0)
   {
     warn "Error: Multiple shared strings are not [yet] supported\n";
@@ -333,10 +346,10 @@ sub getStyles
   my(%fills);
   my(%borders);
   
-  my($xcellFormats) = $data->{'cellXfs'}->{'xf'}; $xcellFormats = [$xcellFormats] if ref $xcellFormats ne 'ARRAY';
-  my($xfonts) = $data->{'fonts'}->{'font'};       $xfonts   = [$xfonts] if ref $xfonts ne 'ARRAY';
-  my($xfills) = $data->{'fills'}->{'fill'};       $xfills   = [$xfills] if ref $xfills ne 'ARRAY';
-  my($xborders) = $data->{'borders'}->{'border'}; $xborders = [$xborders] if ref $xborders ne 'ARRAY';
+  my($xcellFormats) = $data->{'cellXfs'}{'xf'}; $xcellFormats = [$xcellFormats] if ref $xcellFormats ne 'ARRAY';
+  my($xfonts) = $data->{'fonts'}{'font'};       $xfonts   = [$xfonts] if ref $xfonts ne 'ARRAY';
+  my($xfills) = $data->{'fills'}{'fill'};       $xfills   = [$xfills] if ref $xfills ne 'ARRAY';
+  my($xborders) = $data->{'borders'}{'border'}; $xborders = [$xborders] if ref $xborders ne 'ARRAY';
 
   my($idx) = 0;
   
@@ -344,9 +357,9 @@ sub getStyles
   for my $ind (0 .. $#{$xfonts})
   {
     $fonts{$idx} = $self->_parseRunProperties($xfonts->[$ind]);
-    if ($xfonts->[$ind]{name})
+    if ($xfonts->[$ind]{'name'})
     {
-      $fonts{$idx}{'font-name'} = $xfonts->[$ind]{name}{val};
+      $fonts{$idx}{'font-name'} = $xfonts->[$ind]{'name'}{'val'};
     }
     
     $idx++;
@@ -359,13 +372,13 @@ sub getStyles
     $borders{$idx} = {};
     foreach my $side (qw(left right top bottom diagonal))
     {
-      if (exists $xborders->[$ind]{$side}{color})
+      if (exists $xborders->[$ind]{$side}{'color'})
       {
-        $borders{$idx}{$side}{color} = $self->_indexedColors2RGB($xborders->[$ind]{$side}{color}{indexed});
+        $borders{$idx}{$side}{'color'} = $self->_indexedColors2RGB($xborders->[$ind]{$side}{'color'}{'indexed'});
       }
-      if (exists $xborders->[$ind]{$side}{style})
+      if (exists $xborders->[$ind]{$side}{'style'})
       {
-        $borders{$idx}{$side}{style} = $xborders->[$ind]{left}{style};
+        $borders{$idx}{$side}{'style'} = $xborders->[$ind]{$side}{'style'};
       }
     }
 
@@ -377,49 +390,47 @@ sub getStyles
   for my $ind (0 .. $#{$xfills})
   {
     $fills{$idx} = undef;
-    if (exists $xfills->[$ind]{patternFill})
+    if (exists $xfills->[$ind]{'patternFill'})
     {
-      $fills{$idx}{bgColor} = $xfills->[$ind]{patternFill}{bgColor}{indexed} ? $self->_indexedColors2RGB($xfills->[$ind]{patternFill}{bgColor}{indexed}) : undef;
-      $fills{$idx}{fgColor} = $xfills->[$ind]{patternFill}{fgColor}{indexed} ? $self->_indexedColors2RGB($xfills->[$ind]{patternFill}{fgColor}{indexed}) : undef;
+      $fills{$idx}{'bgColor'} = $xfills->[$ind]{'patternFill'}{'bgColor'}{'indexed'} ? $self->_indexedColors2RGB($xfills->[$ind]{'patternFill'}{'bgColor'}{'indexed'}) : undef;
+      $fills{$idx}{'fgColor'} = $xfills->[$ind]{'patternFill'}{'fgColor'}{'indexed'} ? $self->_indexedColors2RGB($xfills->[$ind]{'patternFill'}{'fgColor'}{'indexed'}) : undef;
     }
     
     $idx++;
   }
 
   # §18.8.45
-  $idx = 0;
   for my $ind (0 .. $#{$xcellFormats})
   {
-    my $cFormat = $fonts{$xcellFormats->[$ind]->{'fontId'}};
+    my $cFormat = {%{$fonts{$xcellFormats->[$ind]->{'fontId'}} || {}}}; # copy hash
     if (defined $xcellFormats->[$ind]->{'borderId'} && $borders{$xcellFormats->[$ind]->{'borderId'}} && %{$borders{$xcellFormats->[$ind]->{'borderId'}}})
     {
-      $cFormat->{border} = $borders{$xcellFormats->[$ind]->{'borderId'}};
+      $cFormat->{'border'} = $borders{$xcellFormats->[$ind]->{'borderId'}};
     }
-    if ($xcellFormats->[$ind]{alignment})
+    if ($xcellFormats->[$ind]{'alignment'})
     {
-      if ($xcellFormats->[$ind]{alignment}{horizontal})
+      if ($xcellFormats->[$ind]{'alignment'}{'horizontal'})
       {
-         $cFormat->{'text-align'} = $xcellFormats->[$ind]{alignment}{horizontal};
+         $cFormat->{'text-align'} = $xcellFormats->[$ind]{'alignment'}{'horizontal'};
       }
-      if ($xcellFormats->[$ind]{alignment}{vertical})
+      if ($xcellFormats->[$ind]{'alignment'}{'vertical'})
       {
-         $cFormat->{'vertical-align'} = $xcellFormats->[$ind]{alignment}{vertical};
+         $cFormat->{'vertical-align'} = $xcellFormats->[$ind]{'alignment'}{'vertical'};
       }
-      if (exists $xcellFormats->[$ind]{alignment}{wrapText} && $xcellFormats->[$ind]{alignment}{wrapText} == 0)
+      if (exists $xcellFormats->[$ind]{'alignment'}{'wrapText'} && $xcellFormats->[$ind]{'alignment'}{'wrapText'} == 0)
       {
          $cFormat->{'vertical-align'} = 'nowrap';
       }
     }
-    if ($fills{$xcellFormats->[$ind]->{'fillId'}}{bgColor}) {
-      $cFormat->{'background-color'} = $fills{$xcellFormats->[$ind]->{'fillId'}}{bgColor};
+    if ($fills{$xcellFormats->[$ind]->{'fillId'}}{'bgColor'}) {
+      $cFormat->{'background-color'} = $fills{$xcellFormats->[$ind]->{'fillId'}}{'bgColor'};
     }
-    elsif ($fills{$xcellFormats->[$ind]->{'fillId'}}{fgColor}) {
-      $cFormat->{'background-color'} = $fills{$xcellFormats->[$ind]->{'fillId'}}{fgColor};
+    elsif ($fills{$xcellFormats->[$ind]->{'fillId'}}{'fgColor'}) {
+      $cFormat->{'background-color'} = $fills{$xcellFormats->[$ind]->{'fillId'}}{'fgColor'};
     }
 
     push @cellFormats, $cFormat;
 
-    $idx++;
   }
 
   return \@cellFormats;
@@ -438,7 +449,7 @@ sub _parseRelations
 
     my($xml) = new XML::Simple;
     $data = $xml->XMLin($data);
-    $data = $data->{Relationship} || [];
+    $data = $data->{'Relationship'} || [];
   }
 
   return $data;
@@ -449,13 +460,13 @@ sub _parseRichTextRun
   my ($self, $r) = @_;
   
   my %t;
-  if (exists $r->{t})
+  if (exists $r->{'t'})
   {
-    $t{text} = ref $r->{t} ? $r->{t}{content} || ' ' : $r->{t};
+    $t{Text} = ref $r->{'t'} ? $r->{'t'}{'content'} || ' ' : $r->{'t'};
   }
-  if (exists $r->{rPr})
+  if (exists $r->{'rPr'})
   {
-    $t{style} = $self->_parseRunProperties($r->{rPr});
+    $t{'Style'} = $self->_parseRunProperties($r->{'rPr'});
   }
 
   return \%t;
@@ -468,19 +479,28 @@ sub _parseRunProperties
 
   my $style = {};
 
-  $style->{'bold'}++           if exists $rPr->{'b'};
-  $style->{'italic'}++         if exists $rPr->{'i'};
-  $style->{'strike'}++         if exists $rPr->{'strike'};
-  $style->{'text-shadow'}++  if exists $rPr->{'shadow'};
-  $style->{'outline'}++        if exists $rPr->{'outline'};
+  $style->{'bold'}++        if exists $rPr->{'b'};
+  $style->{'italic'}++      if exists $rPr->{'i'};
+  $style->{'strike'}++      if exists $rPr->{'strike'};
+  $style->{'text-shadow'}++ if exists $rPr->{'shadow'};
+  $style->{'outline'}++     if exists $rPr->{'outline'};
   $style->{'vertical-align'}++ if exists $rPr->{'vertAlign'};
-  $style->{'font-size'} = $rPr->{sz}{val}    if exists $rPr->{'sz'};
-  $style->{'font-name'} = $rPr->{rFont}{val} if exists $rPr->{'rFont'};
+  $style->{'font-size'} = $rPr->{'sz'}{'val'}    if exists $rPr->{'sz'};
+  $style->{'font-name'} = $rPr->{'rFont'}{'val'} if exists $rPr->{'rFont'};
   if (exists $rPr->{'color'} && $rPr->{'color'}{'indexed'})
   {
     $style->{'color'} = $self->_indexedColors2RGB($rPr->{'color'}{'indexed'});
   }
-
+  unless ($style->{'color'})
+  {
+    #
+    # toDo: for know correct default text color
+    #       we must use xfId->cellStyleXfs->fontId->(color=>theme)->xl/theme/theme1.xml->sysClr val="windowText"
+    #
+    # sorry, now 000000 - default text color
+    #
+    $style->{'color'} = '000000';
+  }
   return $style;
 }
 
